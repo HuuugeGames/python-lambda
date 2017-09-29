@@ -66,6 +66,19 @@ def deploy(use_requirements, local_package):
     aws_lambda.deploy(CURRENT_DIR, use_requirements, local_package)
 
 
+@click.command(help='Deploy your code to S3 and register to lambda.')
+@click.option(
+    '--use-requirements', default=False, is_flag=True,
+    help='Install all packages defined in requirements.txt',
+)
+@click.option(
+    '--local-package', default=None, type=click.Path(),
+    help='Install local package as well.', multiple=True,
+)
+def deploy_s3(use_requirements, local_package):
+    aws_lambda.deploy(CURRENT_DIR, use_requirements, local_package, upload_to_s3=True)
+
+
 @click.command(help='Upload your lambda to S3.')
 @click.option(
     '--use-requirements', default=False, is_flag=True,
@@ -92,6 +105,7 @@ if __name__ == '__main__':
     cli.add_command(init)
     cli.add_command(invoke)
     cli.add_command(deploy)
+    cli.add_command(deploy_s3)
     cli.add_command(upload)
     cli.add_command(build)
     cli.add_command(cleanup)

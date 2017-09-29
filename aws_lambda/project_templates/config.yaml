@@ -29,3 +29,22 @@ environment_variables:
 # Build options
 build:
   source_directories: lib # a comma delimited list of directories in your project root that contains source to package.
+trigger:
+  name: 'trigger_name'
+  type: bucket | event # bucket if lambda is suppose to ba launchede on S3 event, event in case of CloudWatchEvent
+  # Configuration template below, edit according to your configuration
+  # S3 configuration
+  bucket_name: 'bucket_name'
+  events:
+    - 's3:ReducedRedundancyLostObject'
+    - 's3:ObjectCreated:*'
+    - 's3:ObjectCreated:Put'
+    - 's3:ObjectCreated:Post'
+    - 's3:ObjectCreated:Copy'
+    - 's3:ObjectCreated:CompleteMultipartUpload'
+    - 's3:ObjectRemoved:*'
+    - 's3:ObjectRemoved:Delete'
+    - 's3:ObjectRemoved:DeleteMarkerCreated'
+  # S3 configuration end
+  # CloudWatch configuration (cron)
+  frequency: "rate(1 hour)" # cron(0 12 * * ? *) - daily at 12.00 UTC

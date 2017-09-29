@@ -25,7 +25,6 @@ from .helpers import mkdir
 from .helpers import read
 from .helpers import timestamp
 
-
 ARN_PREFIXES = {
     'us-gov-west-1': 'aws-us-gov',
 }
@@ -78,7 +77,7 @@ def cleanup_old_versions(src, keep_last_versions):
                           .format(version_number, e.message))
 
 
-def deploy(src, requirements=False, local_package=None):
+def deploy(src, requirements=False, local_package=None, upload_to_s3=False):
     """Deploys a new function to AWS Lambda.
 
     :param str src:
@@ -97,11 +96,14 @@ def deploy(src, requirements=False, local_package=None):
     # Zip the contents of this folder into a single file and output to the dist
     # directory.
     path_to_zip_file = build(src, requirements, local_package)
+    filename = upload_s3(cfg, path_to_zip_file)
 
     if function_exists(cfg, cfg.get('function_name')):
-        update_function(cfg, path_to_zip_file)
+        update_function(cfg, path_to_zip_file, upload_to_s3, filename=filename)
     else:
-        create_function(cfg, path_to_zip_file)
+        create_function(cfg, path_to_zip_file, upload_to_s3, filename=filename)
+    if cfg.get('trigger'):
+        create_trigger(cfg)
 
 
 def upload(src, requirements=False, local_package=None):
@@ -144,8 +146,9 @@ def invoke(src, alt_event=None, verbose=False):
 
     # Load environment variables from the config file into the actual
     # environment.
-    for key, value in cfg.get('environment_variables').items():
-        os.environ[key] = value
+    if cfg.get('environment_variables').items():
+        for key, value in cfg.get('environment_variables').items():
+            os.environ[key] = value
 
     # Load and parse event file.
     if alt_event:
@@ -223,12 +226,13 @@ def build(src, requirements=False, local_package=None):
     # for the output filename.
     function_name = cfg.get('function_name')
     output_filename = '{0}-{1}.zip'.format(timestamp(), function_name)
-
+    build_config = defaultdict(**cfg.get('build', {}))
     path_to_temp = mkdtemp(prefix='aws-lambda')
     pip_install_to_target(
         path_to_temp,
         requirements=requirements,
         local_package=local_package,
+        **cfg['build']
     )
 
     # Hack for Zope.
@@ -250,7 +254,6 @@ def build(src, requirements=False, local_package=None):
 
     # Allow definition of source code directories we want to build into our
     # zipped package.
-    build_config = defaultdict(**cfg.get('build', {}))
     build_source_directories = build_config.get('source_directories', '')
     build_source_directories = (
         build_source_directories
@@ -346,7 +349,7 @@ def _install_packages(path, packages):
         pip.main(['install', package, '-t', path, '--ignore-installed'])
 
 
-def pip_install_to_target(path, requirements=False, local_package=None):
+def pip_install_to_target(path, requirements=False, local_package=None, **kwargs):
     """For a given active virtualenv, gather all installed pip packages then
     copy (re-install) them to the path provided.
 
@@ -371,6 +374,8 @@ def pip_install_to_target(path, requirements=False, local_package=None):
             print('Gathering requirement packages')
             data = read('requirements.txt')
             packages.extend(data.splitlines())
+    if 'remote_packages' in kwargs.keys():
+        packages.extend(kwargs['remote_packages'].split(','))
 
     if not packages:
         print('No dependency packages installed!')
@@ -406,7 +411,7 @@ def get_client(client, aws_access_key_id, aws_secret_access_key, region=None):
     )
 
 
-def create_function(cfg, path_to_zip_file):
+def create_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None):
     """Register and upload a function to AWS Lambda."""
 
     print('Creating your new Lambda function')
@@ -430,12 +435,16 @@ def create_function(cfg, path_to_zip_file):
         os.environ.get('LAMBDA_FUNCTION_NAME') or cfg.get('function_name')
     )
     print('Creating lambda function with name: {}'.format(func_name))
+    code_params_dict = {}
+    code_params_dict.update([('ZipFile', byte_stream)]) if not upload_to_s3 else code_params_dict.update(
+        [('S3Bucket', cfg.get('bucket_name')), ('S3Key', filename)]
+    )
     kwargs = {
         'FunctionName': func_name,
         'Runtime': cfg.get('runtime', 'python2.7'),
         'Role': role,
         'Handler': cfg.get('handler'),
-        'Code': {'ZipFile': byte_stream},
+        'Code': code_params_dict,
         'Description': cfg.get('description'),
         'Timeout': cfg.get('timeout', 15),
         'MemorySize': cfg.get('memory_size', 512),
@@ -456,7 +465,7 @@ def create_function(cfg, path_to_zip_file):
     client.create_function(**kwargs)
 
 
-def update_function(cfg, path_to_zip_file):
+def update_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None):
     """Updates the code of an existing Lambda function"""
 
     print('Updating your Lambda function')
@@ -474,12 +483,19 @@ def update_function(cfg, path_to_zip_file):
         'lambda', aws_access_key_id, aws_secret_access_key,
         cfg.get('region'),
     )
-
-    client.update_function_code(
-        FunctionName=cfg.get('function_name'),
-        ZipFile=byte_stream,
-        Publish=False,
-    )
+    if not upload_to_s3:
+        client.update_function_code(
+            FunctionName=cfg.get('function_name'),
+            ZipFile=byte_stream,
+            Publish=False,
+        )
+    else:
+        client.update_function_code(
+            FunctionName=cfg.get('function_name'),
+            S3Bucket=cfg.get('bucket_name'),
+            S3Key=filename,
+            Publish=False,
+        )
 
     kwargs = {
         'FunctionName': cfg.get('function_name'),
@@ -548,6 +564,7 @@ def upload_s3(cfg, path_to_zip_file):
 
     client.put_object(**kwargs)
     print('Finished uploading {} to S3 bucket {}'.format(func_name, buck_name))
+    return filename
 
 
 def function_exists(cfg, function_name):
@@ -567,7 +584,7 @@ def function_exists(cfg, function_name):
     functions.extend([
         f['FunctionName'] for f in functions_resp.get('Functions', [])
     ])
-    while('NextMarker' in functions_resp):
+    while ('NextMarker' in functions_resp):
         functions_resp = client.list_functions(
             Marker=functions_resp.get('NextMarker'),
         )
@@ -575,3 +592,71 @@ def function_exists(cfg, function_name):
             f['FunctionName'] for f in functions_resp.get('Functions', [])
         ])
     return function_name in functions
+
+
+def create_trigger(cfg):
+    """Creates trigger and associates it with function function (S3 or CloudWatch)"""
+    trigger_type = cfg.get('trigger')['type']
+    log.info("Creating trigger: {}".format(trigger_type))
+    return {
+        "bucket": create_trigger_s3,
+        "event": create_trigger_cloud_watch
+    }[trigger_type](cfg)
+
+
+def create_trigger_s3(cfg):
+    aws_access_key_id = cfg.get('aws_access_key_id')
+    aws_secret_access_key = cfg.get('aws_secret_access_key')
+    s3_client = get_client('s3', aws_access_key_id, aws_secret_access_key, cfg.get('region'))
+    bucket_notification = s3_client.BucketNotification(cfg.get('trigger')['bucket_name'])
+    response = bucket_notification.put(
+        NotificationConfiguration={
+            'LambdaFunctionConfigurations': [
+                {
+                    'LambdaFunctionArn': get_function_arn_name(cfg),
+                    'Events': cfg.get('trigger')['events']
+                }
+            ]
+        }
+    )
+
+
+def create_trigger_cloud_watch(cfg):
+    """Creates or updates cron trigger and associates it with lambda function"""
+    aws_access_key_id = cfg.get('aws_access_key_id')
+    aws_secret_access_key = cfg.get('aws_secret_access_key')
+    lambda_client = get_client('lambda', aws_access_key_id, aws_secret_access_key, cfg.get("region"))
+    events_client = get_client('events', aws_access_key_id, aws_secret_access_key, cfg.get("region"))
+    function_arn = get_function_arn_name(cfg)
+    frequency = cfg.get('trigger')['frequency']
+    trigger_name = "{}-Trigger".format(cfg.get('function_name'))
+
+    rule_response = events_client.put_rule(
+        Name=trigger_name,
+        ScheduleExpression=frequency,
+        State='DISABLED'
+    )
+
+    lambda_client.add_permission(
+        FunctionName=function_arn,
+        StatementId="{}-Event".format(trigger_name),
+        Action="lambda:InvokeFunction",
+        Principal="events.amazonaws.com",
+        SourceArn=rule_response['RuleArn']
+    )
+
+    events_client.put_targets(
+        Rule=trigger_name,
+        Targets=[
+            {
+                'Id': "1",
+                'Arn': function_arn
+            }
+        ]
+    )
+
+
+def get_function_arn_name(cfg):
+    """Retrieves arn name of an existing function"""
+    client = get_client('lambda', cfg.get('aws_access_key_id'), cfg.get('aws_secret_access_key'), cfg.get('region'))
+    return client.get_function(FunctionName=cfg.get('function_name'))['Configuration']['FunctionArn']

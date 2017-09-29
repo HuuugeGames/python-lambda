@@ -51,4 +51,9 @@ setup(
     ],
     test_suite='tests',
     tests_require=test_requirements,
+    options={
+        'build_scripts': {
+            'executable': "/usr/bin/env python"
+        }
+    }
 )
