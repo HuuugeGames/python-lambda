@@ -17,7 +17,7 @@ test_requirements = [
 ]
 
 setup(
-    name='python-lambda',
+    name='hbi-python-lambda',
     version='2.2.1',
     description='The bare minimum for a Python app running on Amazon Lambda.',
     long_description=readme,
