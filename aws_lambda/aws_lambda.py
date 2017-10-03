@@ -91,7 +91,7 @@ def deploy(src, requirements=False, local_package=None, upload_to_s3=False):
     # Zip the contents of this folder into a single file and output to the dist
     # directory.
     path_to_zip_file = build(src, requirements, local_package)
-    filename = upload_s3(cfg, path_to_zip_file)
+    filename = upload_s3(cfg, path_to_zip_file) if upload_to_s3 else None
 
     if function_exists(cfg, cfg.get('function_name')):
         update_function(cfg, path_to_zip_file, upload_to_s3, filename=filename)
@@ -399,15 +399,19 @@ def get_account_id(cfg):
     return client.get_caller_identity().get('Account')
 
 
+client_cache = {}
+
+
 def get_client(client, cfg):
     """Shortcut for getting an initialized instance of the boto3 client."""
-
-    return boto3.client(
-        client,
-        aws_access_key_id=cfg.get('aws_access_key_id'),
-        aws_secret_access_key=cfg.get('aws_secret_access_key'),
-        region_name=cfg.get('region'),
-    )
+    if client not in client_cache:
+        client_cache[client] = boto3.client(
+            client,
+            aws_access_key_id=cfg.get('aws_access_key_id'),
+            aws_secret_access_key=cfg.get('aws_secret_access_key'),
+            region_name=cfg.get('region'),
+        )
+    return client_cache[client]
 
 
 def create_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None):
@@ -514,11 +518,12 @@ def create_role_for_function(cfg):
     role = None
     role_cfg = cfg.get('role')
     if role_cfg is not None:
-        if not get_role(role_cfg['name'], cfg):
+        if not get_role_arn(role_cfg['name'], cfg):
             log.info("Creating new role: {}".format(role_cfg['name']))
             role = create_role(role_cfg['name'], cfg)
         else:
             log.info("Found an existing role, updating policies")
+            role = get_role_arn(role_cfg['name'], cfg)
             put_role_policy(role_cfg['name'], cfg)
     else:
         log.info("No roles found. You can create one by updating your configuration and calling $lambda deploy.")
@@ -639,13 +644,13 @@ def get_function_arn_name(cfg):
     return client.get_function(FunctionName=cfg.get('function_name'))['Configuration']['FunctionArn']
 
 
-def get_role(role_name, cfg):
+def get_role_arn(role_name, cfg):
     client = get_client("iam", cfg)
     response = None
     try:
         response = client.get_role(
             RoleName=role_name
-        )
+        )['Role']['Arn']
     except Exception as e:
         pass
     return response
@@ -688,6 +693,3 @@ def put_role_policy(role_name, cfg):
             log.warn(e.message)
     else:
         log.debug("No policy file found")
-
-
-
