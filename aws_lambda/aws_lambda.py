@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 
-import hashlib
 import json
 import logging
 import os
@@ -49,13 +48,7 @@ def cleanup_old_versions(src, keep_last_versions):
         path_to_config_file = os.path.join(src, 'config.yaml')
         cfg = read(path_to_config_file, loader=yaml.load)
 
-        aws_access_key_id = cfg.get('aws_access_key_id')
-        aws_secret_access_key = cfg.get('aws_secret_access_key')
-
-        client = get_client(
-            'lambda', aws_access_key_id, aws_secret_access_key,
-            cfg.get('region'),
-        )
+        client = get_client('lambda', cfg)
 
         response = client.list_versions_by_function(
             FunctionName=cfg.get('function_name'),
@@ -80,6 +73,8 @@ def cleanup_old_versions(src, keep_last_versions):
 def deploy(src, requirements=False, local_package=None, upload_to_s3=False):
     """Deploys a new function to AWS Lambda.
 
+    :param upload_to_s3: upload function code to S3
+    :param requirements:
     :param str src:
         The path to your Lambda ready project (folder must contain a valid
         config.yaml and handler module (e.g.: service.py).
@@ -109,6 +104,7 @@ def deploy(src, requirements=False, local_package=None, upload_to_s3=False):
 def upload(src, requirements=False, local_package=None):
     """Uploads a new function to AWS S3.
 
+    :param requirements:
     :param str src:
         The path to your Lambda ready project (folder must contain a valid
         config.yaml and handler module (e.g.: service.py).
@@ -205,6 +201,7 @@ def init(src, minimal=False):
 def build(src, requirements=False, local_package=None):
     """Builds the file bundle.
 
+    :param requirements:
     :param str src:
        The path to your Lambda ready project (folder must contain a valid
         config.yaml and handler module (e.g.: service.py).
@@ -337,9 +334,11 @@ def _install_packages(path, packages):
     :param list packages:
         A list of packages to be installed via pip.
     """
+
     def _filter_blacklist(package):
         blacklist = ['-i', '#', 'Python==', 'python-lambda==']
         return all(package.startswith(entry) is False for entry in blacklist)
+
     filtered_packages = filter(_filter_blacklist, packages)
     for package in filtered_packages:
         if package.startswith('-e '):
@@ -394,20 +393,20 @@ def get_role_name(region, account_id, role):
     return 'arn:{0}:iam::{1}:role/{2}'.format(prefix, account_id, role)
 
 
-def get_account_id(aws_access_key_id, aws_secret_access_key):
+def get_account_id(cfg):
     """Query STS for a users' account_id"""
-    client = get_client('sts', aws_access_key_id, aws_secret_access_key)
+    client = get_client('sts', cfg)
     return client.get_caller_identity().get('Account')
 
 
-def get_client(client, aws_access_key_id, aws_secret_access_key, region=None):
+def get_client(client, cfg):
     """Shortcut for getting an initialized instance of the boto3 client."""
 
     return boto3.client(
         client,
-        aws_access_key_id=aws_access_key_id,
-        aws_secret_access_key=aws_secret_access_key,
-        region_name=region,
+        aws_access_key_id=cfg.get('aws_access_key_id'),
+        aws_secret_access_key=cfg.get('aws_secret_access_key'),
+        region_name=cfg.get('region'),
     )
 
 
@@ -416,19 +415,9 @@ def create_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None):
 
     print('Creating your new Lambda function')
     byte_stream = read(path_to_zip_file, binary_file=True)
-    aws_access_key_id = cfg.get('aws_access_key_id')
-    aws_secret_access_key = cfg.get('aws_secret_access_key')
+    role = create_role_for_function(cfg)
 
-    account_id = get_account_id(aws_access_key_id, aws_secret_access_key)
-    role = get_role_name(
-        cfg.get('region'), account_id,
-        cfg.get('role', 'lambda_basic_execution'),
-    )
-
-    client = get_client(
-        'lambda', aws_access_key_id, aws_secret_access_key,
-        cfg.get('region'),
-    )
+    client = get_client('lambda', cfg)
 
     # Do we prefer development variable over config?
     func_name = (
@@ -470,19 +459,11 @@ def update_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None):
 
     print('Updating your Lambda function')
     byte_stream = read(path_to_zip_file, binary_file=True)
-    aws_access_key_id = cfg.get('aws_access_key_id')
-    aws_secret_access_key = cfg.get('aws_secret_access_key')
 
-    account_id = get_account_id(aws_access_key_id, aws_secret_access_key)
-    role = get_role_name(
-        cfg.get('region'), account_id,
-        cfg.get('role', 'lambda_basic_execution'),
-    )
+    role = create_role_for_function(cfg)
 
     client = get_client(
-        'lambda', aws_access_key_id, aws_secret_access_key,
-        cfg.get('region'),
-    )
+        'lambda', cfg)
     if not upload_to_s3:
         client.update_function_code(
             FunctionName=cfg.get('function_name'),
@@ -529,25 +510,31 @@ def update_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None):
     )
 
 
+def create_role_for_function(cfg):
+    role = None
+    role_cfg = cfg.get('role')
+    if role_cfg is not None:
+        if not get_role(role_cfg['name'], cfg):
+            log.info("Creating new role: {}".format(role_cfg['name']))
+            role = create_role(role_cfg['name'], cfg)
+        else:
+            log.info("Found an existing role, updating policies")
+            put_role_policy(role_cfg['name'], cfg)
+    else:
+        log.info("No roles found. You can create one by updating your configuration and calling $lambda deploy.")
+    return role
+
+
 def upload_s3(cfg, path_to_zip_file):
     """Upload a function to AWS S3."""
 
     print('Uploading your new Lambda function')
-    aws_access_key_id = cfg.get('aws_access_key_id')
-    aws_secret_access_key = cfg.get('aws_secret_access_key')
-    client = get_client(
-        's3', aws_access_key_id, aws_secret_access_key,
-        cfg.get('region'),
-    )
+    client = get_client('s3', cfg)
     byte_stream = b''
     with open(path_to_zip_file, mode='rb') as fh:
         byte_stream = fh.read()
     s3_key_prefix = cfg.get('s3_key_prefix', '/dist')
-    checksum = hashlib.new('md5', byte_stream).hexdigest()
-    timestamp = str(time.time())
-    filename = '{prefix}{checksum}-{ts}.zip'.format(
-        prefix=s3_key_prefix, checksum=checksum, ts=timestamp,
-    )
+    filename = '{prefix}.zip'.format(prefix=s3_key_prefix)
 
     # Do we prefer development variable over config?
     buck_name = (
@@ -569,13 +556,7 @@ def upload_s3(cfg, path_to_zip_file):
 
 def function_exists(cfg, function_name):
     """Check whether a function exists or not"""
-
-    aws_access_key_id = cfg.get('aws_access_key_id')
-    aws_secret_access_key = cfg.get('aws_secret_access_key')
-    client = get_client(
-        'lambda', aws_access_key_id, aws_secret_access_key,
-        cfg.get('region'),
-    )
+    client = get_client('lambda', cfg)
 
     # Need to loop through until we get all of the lambda functions returned.
     # It appears to be only returning 50 functions at a time.
@@ -584,7 +565,7 @@ def function_exists(cfg, function_name):
     functions.extend([
         f['FunctionName'] for f in functions_resp.get('Functions', [])
     ])
-    while ('NextMarker' in functions_resp):
+    while 'NextMarker' in functions_resp:
         functions_resp = client.list_functions(
             Marker=functions_resp.get('NextMarker'),
         )
@@ -605,11 +586,9 @@ def create_trigger(cfg):
 
 
 def create_trigger_s3(cfg):
-    aws_access_key_id = cfg.get('aws_access_key_id')
-    aws_secret_access_key = cfg.get('aws_secret_access_key')
-    s3_client = get_client('s3', aws_access_key_id, aws_secret_access_key, cfg.get('region'))
+    s3_client = get_client('s3', cfg)
     bucket_notification = s3_client.BucketNotification(cfg.get('trigger')['bucket_name'])
-    response = bucket_notification.put(
+    bucket_notification.put(
         NotificationConfiguration={
             'LambdaFunctionConfigurations': [
                 {
@@ -623,10 +602,8 @@ def create_trigger_s3(cfg):
 
 def create_trigger_cloud_watch(cfg):
     """Creates or updates cron trigger and associates it with lambda function"""
-    aws_access_key_id = cfg.get('aws_access_key_id')
-    aws_secret_access_key = cfg.get('aws_secret_access_key')
-    lambda_client = get_client('lambda', aws_access_key_id, aws_secret_access_key, cfg.get("region"))
-    events_client = get_client('events', aws_access_key_id, aws_secret_access_key, cfg.get("region"))
+    lambda_client = get_client('lambda', cfg)
+    events_client = get_client('events', cfg)
     function_arn = get_function_arn_name(cfg)
     frequency = cfg.get('trigger')['frequency']
     trigger_name = "{}-Trigger".format(cfg.get('function_name'))
@@ -658,5 +635,59 @@ def create_trigger_cloud_watch(cfg):
 
 def get_function_arn_name(cfg):
     """Retrieves arn name of an existing function"""
-    client = get_client('lambda', cfg.get('aws_access_key_id'), cfg.get('aws_secret_access_key'), cfg.get('region'))
+    client = get_client('lambda', cfg)
     return client.get_function(FunctionName=cfg.get('function_name'))['Configuration']['FunctionArn']
+
+
+def get_role(role_name, cfg):
+    client = get_client("iam", cfg)
+    response = None
+    try:
+        response = client.get_role(
+            RoleName=role_name
+        )
+    except Exception as e:
+        pass
+    return response
+
+
+def create_role(role_name, cfg):
+    client = get_client('iam', cfg)
+    response = client.create_role(
+        RoleName=role_name,
+        AssumeRolePolicyDocument="""{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Action": "sts:AssumeRole",
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Service": "lambda.amazonaws.com"
+                  }
+                }
+              ]
+            }"""
+    )
+    role_arn = response['Role']['Arn']
+    put_role_policy(role_name, cfg)
+    return role_arn
+
+
+def put_role_policy(role_name, cfg):
+    client = get_client('iam', cfg)
+    role_cfg = cfg.get('role')
+    if os.path.exists(role_cfg['policy_document']):
+        try:
+            with open(role_cfg['policy_document']) as policy:
+                client.put_role_policy(
+                    RoleName=role_name,
+                    PolicyName=role_cfg['policy_name'],
+                    PolicyDocument=json.dumps(json.load(policy))
+                )
+        except Exception as e:
+            log.warn(e.message)
+    else:
+        log.debug("No policy file found")
+
+
+
