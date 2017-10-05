@@ -42,15 +42,23 @@ def init(folder, minimal):
     '--local-package', default=None, type=click.Path(),
     help='Install local package as well.', multiple=True,
 )
-def build(use_requirements, local_package):
-    aws_lambda.build(CURRENT_DIR, use_requirements, local_package)
+@click.option(
+    '--config-file-path', default=None, type=click.Path(),
+    help='Path to custom config.yaml file', multiple=False
+)
+def build(use_requirements, local_package, config_file_path=None):
+    aws_lambda.build(CURRENT_DIR, use_requirements, local_package, config_file_path)
 
 
 @click.command(help='Run a local test of your function.')
 @click.option('--event-file', default=None, help='Alternate event file.')
 @click.option('--verbose', '-v', is_flag=True)
-def invoke(event_file, verbose):
-    aws_lambda.invoke(CURRENT_DIR, event_file, verbose)
+@click.option(
+    '--config-file-path', default=None, type=click.Path(),
+    help='Path to custom config.yaml file', multiple=False
+)
+def invoke(event_file, verbose, config_file_path):
+    aws_lambda.invoke(CURRENT_DIR, event_file, verbose, config_file_path)
 
 
 @click.command(help='Register and deploy your code to lambda.')
@@ -62,8 +70,17 @@ def invoke(event_file, verbose):
     '--local-package', default=None, type=click.Path(),
     help='Install local package as well.', multiple=True,
 )
-def deploy(use_requirements, local_package):
-    aws_lambda.deploy(CURRENT_DIR, use_requirements, local_package)
+@click.option(
+    '--config-file-path', default=None, type=click.Path(),
+    help='Path to custom config.yaml file', multiple=False
+)
+@click.option(
+    '--aws-profile', default=None, type=click.STRING,
+    help='AWS profile name.', multiple=False
+)
+def deploy(use_requirements, local_package, config_file_path, aws_profile):
+    aws_lambda.deploy(CURRENT_DIR, use_requirements, local_package, config_file_path=config_file_path,
+                      aws_profile=aws_profile)
 
 
 @click.command(help='Deploy your code to S3 and register to lambda.')
@@ -75,8 +92,17 @@ def deploy(use_requirements, local_package):
     '--local-package', default=None, type=click.Path(),
     help='Install local package as well.', multiple=True,
 )
-def deploy_s3(use_requirements, local_package):
-    aws_lambda.deploy(CURRENT_DIR, use_requirements, local_package, upload_to_s3=True)
+@click.option(
+    '--config-file-path', default=None, type=click.Path(),
+    help='Path to custom config.yaml file', multiple=False
+)
+@click.option(
+    '--aws-profile', default=None, type=click.STRING,
+    help='AWS profile name.', multiple=False
+)
+def deploy_s3(use_requirements, local_package, config_file_path, aws_profile):
+    aws_lambda.deploy(CURRENT_DIR, use_requirements, local_package, upload_to_s3=True,
+                      config_file_path=config_file_path, aws_profile=aws_profile)
 
 
 @click.command(help='Upload your lambda to S3.')
@@ -88,8 +114,17 @@ def deploy_s3(use_requirements, local_package):
     '--local-package', default=None, type=click.Path(),
     help='Install local package as well.', multiple=True,
 )
-def upload(use_requirements, local_package):
-    aws_lambda.upload(CURRENT_DIR, use_requirements, local_package)
+@click.option(
+    '--config-file-path', default=None, type=click.Path(),
+    help='Path to custom config.yaml file', multiple=False
+)
+@click.option(
+    '--aws-profile', default=None, type=click.STRING,
+    help='AWS profile name.', multiple=False
+)
+def upload(use_requirements, local_package, config_file_path, aws_profile):
+    aws_lambda.upload(CURRENT_DIR, use_requirements, local_package, config_file_path=config_file_path,
+                      aws_profile=aws_profile)
 
 
 @click.command(help='Delete old versions of your functions')
@@ -97,8 +132,12 @@ def upload(use_requirements, local_package):
     '--keep-last', type=int,
     prompt='Please enter the number of recent versions to keep',
 )
-def cleanup(keep_last):
-    aws_lambda.cleanup_old_versions(CURRENT_DIR, keep_last)
+@click.option(
+    '--config-file-path', default=None, type=click.Path(),
+    help='Path to custom config.yaml file', multiple=False
+)
+def cleanup(keep_last, config_file_path):
+    aws_lambda.cleanup_old_versions(CURRENT_DIR, keep_last, config_file_path=config_file_path)
 
 
 if __name__ == '__main__':
