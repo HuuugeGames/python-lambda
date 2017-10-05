@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 
+import glob
 import json
 import logging
 import os
@@ -200,10 +201,6 @@ def init(src, minimal=False):
             copy(dest_path, src)
 
 
-def filter_ignore(args):
-    pass
-
-
 def build(src, requirements=False, local_package=None, config_file_path=None):
     """Builds the file bundle.
 
@@ -267,14 +264,23 @@ def build(src, requirements=False, local_package=None, config_file_path=None):
         d.strip() for d in build_source_directories.split(',')
     ]
 
+    def filter_ignored_files(file_name):
+        ignore_file_path = os.path.join(src, ".lambdaignore")
+        if os.path.exists(ignore_file_path):
+            with open(ignore_file_path) as ignored:
+                ignored_patterns = map(str.strip, ignored.readlines())
+            return all(file_name not in glob.glob(entry) for entry in ignored_patterns)
+
     files = []
     listdir = os.listdir(src)
-    # filtered_files = filter(filter_ignore, listdir)
-    for filename in listdir:
+    filtered_files = filter(filter_ignored_files, listdir)
+    for filename in filtered_files:
         if os.path.isfile(filename):
             if filename == '.DS_Store':
                 continue
             if 'yaml' in filename:
+                continue
+            if filename == '.lambdaignore':
                 continue
             print('Bundling: %r' % filename)
             files.append(os.path.join(src, filename))
