@@ -270,6 +270,8 @@ def build(src, requirements=False, local_package=None, config_file_path=None):
             with open(ignore_file_path) as ignored:
                 ignored_patterns = map(str.strip, ignored.readlines())
             return all(file_name not in glob.glob(entry) for entry in ignored_patterns)
+        else:
+            return True
 
     files = []
     listdir = os.listdir(src)
