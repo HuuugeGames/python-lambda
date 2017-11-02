@@ -9,7 +9,7 @@
                 "s3:PutObject"
             ],
             "Resource": [
-                "arn:aws:s3:::ha-db-appsflyer/*"
+                "arn:aws:s3:::*/*"
             ]
         },
         {
@@ -19,7 +19,7 @@
                 "s3:GetObject"
             ],
             "Resource": [
-                "arn:aws:s3:::ha-db-sku-dict/*"
+                "arn:aws:s3:::*/*"
             ]
         },
         {

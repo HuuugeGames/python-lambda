@@ -18,6 +18,7 @@ import boto3
 import botocore
 import pip
 import yaml
+from pip._vendor.distlib._backport import shutil
 
 from .helpers import archive
 from .helpers import get_environment_variable_value
@@ -91,7 +92,7 @@ def deploy(src, requirements=False, local_package=None, upload_to_s3=False, conf
     # folder then add the handler file in the root of this directory.
     # Zip the contents of this folder into a single file and output to the dist
     # directory.
-    path_to_zip_file = build(src, requirements, local_package)
+    path_to_zip_file = build(src, requirements, local_package, config_file_path=config_file_path)
     filename = upload_s3(cfg, path_to_zip_file, aws_profile=aws_profile) if upload_to_s3 else None
 
     if function_exists(cfg, cfg.get('function_name'), aws_profile=aws_profile):
@@ -305,6 +306,8 @@ def build(src, requirements=False, local_package=None, config_file_path=None):
     # Zip them together into a single file.
     # TODO: Delete temp directory created once the archive has been compiled.
     path_to_zip_file = archive('./', path_to_dist, output_filename)
+    shutil.rmtree(path_to_temp)
+    os.chdir(src)
     return path_to_zip_file
 
 
@@ -479,8 +482,18 @@ def create_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None, aw
                 },
             },
         )
-
-    client.create_function(**kwargs)
+    for i in range(5):
+        try:
+            if function_exists(cfg, func_name, aws_profile=aws_profile):
+                continue
+            else:
+                client.create_function(**kwargs)
+                print('Successfully created function {}'.format(func_name))
+        except Exception as e:
+            print("Error while updating function, backing off.")
+            time.sleep(5)  # aws tells that deploys everything almost immediately. Almost...
+            if i > 3:
+                raise e
 
 
 def update_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None, aws_profile=None):
@@ -490,7 +503,6 @@ def update_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None, aw
     byte_stream = read(path_to_zip_file, binary_file=True)
 
     role = create_role_for_function(cfg, aws_profile=aws_profile)
-
     client = get_client('lambda', cfg, aws_profile=aws_profile)
     if not upload_to_s3:
         client.update_function_code(
@@ -505,7 +517,6 @@ def update_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None, aw
             S3Key=filename,
             Publish=False,
         )
-
     kwargs = {
         'FunctionName': cfg.get('function_name'),
         'Role': role,
@@ -529,8 +540,16 @@ def update_function(cfg, path_to_zip_file, upload_to_s3=False, filename=None, aw
                 },
             },
         )
-
-    client.update_function_configuration(**kwargs)
+    for i in range(5):
+        try:
+            if client.update_function_configuration(**kwargs):
+                print("Successfully updated function {}".format(cfg.get('function_name')))
+                break
+        except Exception as e:
+            print("Error while updating function, backing off.")
+            time.sleep(5)  # aws tells that deploys everything almost immediately. Almost...
+            if i > 3:
+                raise e
 
     # Publish last, so versions pick up eventually updated description...
     client.publish_version(
@@ -611,7 +630,8 @@ def create_trigger(cfg, aws_profile=None):
     log.info("Creating trigger: {}".format(trigger_type))
     return {
         "bucket": create_trigger_s3,
-        "event": create_trigger_cloud_watch
+        "event": create_trigger_cloud_watch,
+        "sns": create_sns_trigger
     }[trigger_type](cfg, aws_profile)
 
 
@@ -636,7 +656,7 @@ def create_trigger_cloud_watch(cfg, aws_profile=None):
     events_client = get_client('events', cfg, aws_profile=aws_profile)
     function_arn = get_function_arn_name(cfg, aws_profile=aws_profile)
     frequency = cfg.get('trigger')['frequency']
-    trigger_name = "{}-Trigger".format(cfg.get('function_name'))
+    trigger_name = "{}".format(cfg.get('trigger')['name'])
 
     rule_response = events_client.put_rule(
         Name=trigger_name,
@@ -651,7 +671,7 @@ def create_trigger_cloud_watch(cfg, aws_profile=None):
             StatementId=statement_id,
         )
     except Exception:  # sanity check if resource is not found. boto uses its own factory to instantiate exceptions
-        pass           # that's why exception clause is so broad
+        pass  # that's why exception clause is so broad
 
     lambda_client.add_permission(
         FunctionName=function_arn,
@@ -670,6 +690,96 @@ def create_trigger_cloud_watch(cfg, aws_profile=None):
             }
         ]
     )
+
+
+def create_sns_trigger(cfg, aws_profile=None):
+    sns_client = get_client('sns', cfg, aws_profile)
+    lambda_client = get_client('lambda', cfg, aws_profile)
+    s3_client = get_client('s3', cfg, aws_profile)
+
+    function_arn = get_function_arn_name(cfg, aws_profile)
+    trigger_name = cfg.get('trigger')['name']
+    topic_arn = sns_client.create_topic(
+        Name=trigger_name
+    )['TopicArn']
+
+    topic_policy_document = """
+        {{
+  "Version": "2008-10-17",
+  "Id": "__default_policy_ID",
+  "Statement": [
+    {{
+      "Sid": "_s3",
+      "Effect": "Allow",
+      "Principal": {{
+        "Service": "s3.amazonaws.com"
+      }},
+      "Action": [
+        "SNS:Publish"
+      ],
+      "Resource": "{topic_arn}",
+      "Condition": {{
+        "StringLike": {{
+          "aws:SourceArn": "arn:aws:s3:::*"
+        }}
+      }}
+    }}
+  ]
+}}"""
+    sns_client.set_topic_attributes(
+        TopicArn=topic_arn,
+        AttributeName='Policy',
+        AttributeValue=topic_policy_document.format(topic_arn=topic_arn)
+    )
+
+    sns_client.subscribe(
+        TopicArn=topic_arn,
+        Protocol='lambda',
+        Endpoint=function_arn
+    )
+
+    statement_id = "{}-Topic".format(trigger_name)
+    try:
+        lambda_client.remove_permission(
+            FunctionName=function_arn,
+            StatementId=statement_id,
+        )
+    except Exception:  # sanity check if resource is not found. boto uses its own factory to instantiate exceptions
+        pass  # that's why exception clause is so broad
+    lambda_client.add_permission(
+        FunctionName=function_arn,
+        StatementId=statement_id,
+        Action="lambda:InvokeFunction",
+        Principal="sns.amazonaws.com",
+        SourceArn=topic_arn
+    )
+    for bucket in cfg.get('trigger')['buckets']:
+        bucket_values = bucket.values()[0]
+        s3_client.put_bucket_notification_configuration(
+            Bucket=bucket_values['bucket_name'],
+            NotificationConfiguration={
+                'TopicConfigurations': [
+                    {
+                        'TopicArn': topic_arn,
+                        'Events': bucket_values['events'],
+                        'Filter': {
+                            'Key': {
+                                'FilterRules': [
+                                    {
+                                        'Name': 'prefix',
+                                        'Value': bucket_values['prefix']
+                                    },
+                                    {
+                                        'Name': 'suffix',
+                                        'Value': bucket_values['suffix']
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }
+        )
 
 
 def get_function_arn_name(cfg, aws_profile):
@@ -695,27 +805,37 @@ def create_role(role_name, cfg, aws_profile=None):
     response = client.create_role(
         RoleName=role_name,
         AssumeRolePolicyDocument="""{
-              "Version": "2012-10-17",
-              "Statement": [
-                {
-                  "Action": "sts:AssumeRole",
-                  "Effect": "Allow",
-                  "Principal": {
-                    "Service": "lambda.amazonaws.com"
-                  }
-                }
-              ]
-            }"""
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    },
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "apigateway.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}"""
     )
     role_arn = response['Role']['Arn']
     put_role_policy(role_name, cfg, aws_profile)
+    print("Checking if policy is available.")
+    policy = client.get_role_policy(RoleName=role_name, PolicyName=cfg.get('role')['policy_name'])
+    assert policy['ResponseMetadata']['HTTPStatusCode'] == 200
     return role_arn
 
 
 def put_role_policy(role_name, cfg, aws_profile=None):
     client = get_client('iam', cfg, aws_profile=aws_profile)
     role_cfg = cfg.get('role')
-    if os.path.exists(role_cfg['policy_document']):
+    if os.path.exists(os.path.join(os.getcwd(), role_cfg['policy_document'])):
         try:
             with open(role_cfg['policy_document']) as policy:
                 client.put_role_policy(

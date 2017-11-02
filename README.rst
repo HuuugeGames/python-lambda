@@ -112,6 +112,20 @@ When you're ready to deploy your code to Lambda simply run:
 
     (pylambda) $ lambda deploy
 
+There is also option to upload your lambda code to S3 and deploy to Lambda, run:
+
+.. code:: bash
+
+    (pylambda) $ lambda deploy_s3
+
+This command will: zip and upload you code to S3 storage basing on your configuration (bucket/s3_key_prefix) and then create (or update) lambda with you zipped code.
+
+If you want to use different configuration files (e.g dev and prod) simply create one and when deploying lambda add --config-file-path option:
+
+.. code:: bash
+
+    (pylambda) $ lambda deploy_s3 --config-file-path config-dev.yaml
+
 The deploy script will evaluate your virtualenv and identify your project dependencies. It will package these up along with your handler function to a zip file that it then uploads to AWS Lambda.
 
 You can now log into the `AWS Lambda management console <https://console.aws.amazon.com/lambda/>`_ to verify the code deployed successfully.
@@ -175,6 +189,74 @@ bucket_name: 'example-bucket'
 s3_key_prefix: 'path/to/file/'
 ```
 Your role must have `s3:PutObject` permission on the bucket/key that you specify for the upload to work properly. Once you have that set, you can execute `lambda upload` to initiate the transfer.
+
+Trigger
+=======
+It is possible to configure your lambda to use trigger. Currently supported events are:
+  * event (scheduled event/cron)
+  * sns topic
+  * S3 bucket
+Before using trigger you need to provide configuration appropriate to trigger type (use only one that match your needs).
+Event
+```
+type: event
+name: trigger_name
+frequency: cron(rate 1 hour)
+```
+SNS topic - if given topic doesn't exist it will be created
+```
+type: sns
+name: sns_topic_name
+buckets:
+    bucket1:
+        bucket_name: 'bucket_name'
+        events:
+          - 's3:ReducedRedundancyLostObject'
+          - 's3:ObjectCreated:*'
+          - 's3:ObjectCreated:Put'
+          - 's3:ObjectCreated:Post'
+          - 's3:ObjectCreated:Copy'
+          - 's3:ObjectCreated:CompleteMultipartUpload'
+          - 's3:ObjectRemoved:*'
+          - 's3:ObjectRemoved:Delete'
+          - 's3:ObjectRemoved:DeleteMarkerCreated'
+        prefix: ''
+        suffix: ''
+    bucket2:
+        bucket_name: 'bucket_name'
+        events:
+          - 's3:ReducedRedundancyLostObject'
+          - 's3:ObjectCreated:*'
+          - 's3:ObjectCreated:Put'
+          - 's3:ObjectCreated:Post'
+          - 's3:ObjectCreated:Copy'
+          - 's3:ObjectCreated:CompleteMultipartUpload'
+          - 's3:ObjectRemoved:*'
+          - 's3:ObjectRemoved:Delete'
+          - 's3:ObjectRemoved:DeleteMarkerCreated'
+        prefix: ''
+        suffix: ''
+```
+S3 Bucket
+```
+type: bucket
+bucket_name'bucket_name'
+  events:
+    - 's3:ReducedRedundancyLostObject'
+    - 's3:ObjectCreated:*'
+    - 's3:ObjectCreated:Put'
+    - 's3:ObjectCreated:Post'
+    - 's3:ObjectCreated:Copy'
+    - 's3:ObjectCreated:CompleteMultipartUpload'
+    - 's3:ObjectRemoved:*'
+    - 's3:ObjectRemoved:Delete'
+    - 's3:ObjectRemoved:DeleteMarkerCreated'
+```
+
+Ignore file
+===========
+If you don't want to include some files in your zipped lambda package, simply add file patterns to
+```.lambdaignore``` file.
 
 Development
 ===========
